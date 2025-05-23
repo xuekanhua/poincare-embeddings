@@ -156,7 +156,7 @@ def eval_reconstruction_slow(adj, lt, distfn):
         _dists_masked = _dists.copy()
         _ranks = []
         for o in s_types:
-            _dists_masked[o] = np.Inf
+            _dists_masked[o] = np.inf
             _labels[o] = 1
         for o in s_types:
             d = _dists_masked.copy()
