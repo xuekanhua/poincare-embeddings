@@ -156,6 +156,7 @@ def _run_training(
     negs: int,
     burnin: int,
     dampening: float,
+    extra_args: Sequence[str] | None = None,
 ) -> None:
     """Invoke the existing embed.py CLI for a single dataset."""
 
@@ -183,8 +184,18 @@ def _run_training(
         "-dampening",
         str(dampening),
     ]
+    if extra_args:
+        cmd.extend(extra_args)
     logging.info("Launching training: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as exc:  # pragma: no cover - runtime aid
+        logging.error("embed.py failed with return code %s", exc.returncode)
+        if exc.stdout:
+            logging.error("stdout:\n%s", exc.stdout)
+        if exc.stderr:
+            logging.error("stderr:\n%s", exc.stderr)
+        raise
 
 
 def main() -> None:
@@ -216,6 +227,11 @@ def main() -> None:
     parser.add_argument("--negs", type=int, default=50)
     parser.add_argument("--burnin", type=int, default=10)
     parser.add_argument("--dampening", type=float, default=0.75)
+    parser.add_argument(
+        "--embed-extra",
+        nargs=argparse.REMAINDER,
+        help="Additional arguments forwarded to embed.py (e.g., --embed-extra -ndproc 0 -fresh)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -243,6 +259,7 @@ def main() -> None:
                 negs=args.negs,
                 burnin=args.burnin,
                 dampening=args.dampening,
+                extra_args=args.embed_extra,
             )
 
 
