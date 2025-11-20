@@ -53,6 +53,11 @@ If you find this code useful for your research, please cite the following paper 
 }
 #+END_SRC
 
+** Clinical code embeddings
+For ICD-9/ICD-9-CM and ATC clinical code hierarchies, see
+[[file:MEDICAL_TRAINING.md][MEDICAL_TRAINING.md]] for end-to-end instructions on building edge lists and
+training three separate embeddings for diagnoses, procedures, and medications.
+
 ** License
 This code is licensed under [[https://creativecommons.org/licenses/by-nc/4.0/][CC-BY-NC 4.0]].
 
