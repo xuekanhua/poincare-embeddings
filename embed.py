@@ -9,7 +9,13 @@ import torch as th
 import numpy as np
 import logging
 import argparse
-from hype.adjacency_matrix_dataset import AdjacencyDataset
+from typing import Iterable, Tuple
+
+try:  # Optional: requires Cython extension build
+    from hype.adjacency_matrix_dataset import AdjacencyDataset
+except Exception:  # pragma: no cover - runtime fallback
+    AdjacencyDataset = None
+
 from hype import train
 from hype.graph import load_adjacency_matrix, load_edge_list, eval_reconstruction
 from hype.checkpoint import LocalCheckpoint
@@ -18,9 +24,13 @@ import sys
 import json
 import torch.multiprocessing as mp
 import shutil
-from hype.graph_dataset import BatchedDataset # @manual=fbcode//deeplearning/projects/hyperbolic-embeddings:graph_dataset/hype/graph_dataset
 from hype import MANIFOLDS, MODELS, build_model
 from hype.hypernymy_eval import main as hype_eval
+
+try:  # Prefer the optimized Cython implementation when available
+    from hype.graph_dataset import BatchedDataset  # type: ignore
+except Exception:  # pragma: no cover - runtime fallback
+    BatchedDataset = None
 
 th.manual_seed(42)
 np.random.seed(42)
@@ -78,6 +88,54 @@ def async_eval(adj, q, logQ, opt):
             raise ValueError(f'Unrecognized evaluation: {opt.eval}')
         best = lmsg if lmsg['best'] else best
         logQ.put((lmsg, pth))
+
+
+def _python_batched_dataset(
+    idx: np.ndarray,
+    objects: Iterable[str],
+    weights: np.ndarray,
+    nnegs: int,
+    batch_size: int,
+    burnin: bool,
+    sample_dampening: float,
+):
+    """Minimal pure-Python fallback when the Cython dataset is unavailable.
+
+    This keeps the same iteration contract expected by ``train.train`` but uses
+    NumPy sampling instead of the multi-threaded Cython implementation. The
+    sampler follows the same dampened-frequency distribution to pick negatives.
+    """
+
+    counts = np.zeros(len(objects), dtype=np.float64)
+    # Estimate popularity for the negative-sampling distribution from the tail
+    # indices and associated weights
+    np.add.at(counts, idx[:, 1], weights)
+    probs = counts ** sample_dampening
+    probs = probs / probs.sum()
+
+    num_rows = idx.shape[0]
+    order = np.arange(num_rows)
+
+    def iterator():
+        np.random.shuffle(order)
+        cursor = 0
+        while cursor < num_rows:
+            batch_idx = order[cursor : cursor + batch_size]
+            cursor += batch_size
+            positives = idx[batch_idx]
+            batch = np.empty((positives.shape[0], nnegs + 2), dtype=np.int64)
+            batch[:, 0:2] = positives
+            # Draw negatives; ensure they are not equal to the tail index to
+            # avoid trivial positives. Resample any collisions.
+            negs = np.random.choice(len(objects), size=(positives.shape[0], nnegs), p=probs)
+            collisions = negs == positives[:, 1:2]
+            while collisions.any():
+                negs[collisions] = np.random.choice(len(objects), size=collisions.sum(), p=probs)
+                collisions = negs == positives[:, 1:2]
+            batch[:, 2:] = negs
+            yield th.LongTensor(batch), th.zeros(batch.shape[0]).long()
+
+    return iterator()
 
 
 # Adapated from:
@@ -159,10 +217,23 @@ def main():
     if 'csv' in opt.dset:
         log.info('Using edge list dataloader')
         idx, objects, weights = load_edge_list(opt.dset, opt.sym)
-        data = BatchedDataset(idx, objects, weights, opt.negs, opt.batchsize,
-            opt.ndproc, opt.burnin > 0, opt.dampening)
+        if BatchedDataset is not None:
+            data = BatchedDataset(idx, objects, weights, opt.negs, opt.batchsize,
+                opt.ndproc, opt.burnin > 0, opt.dampening)
+        else:
+            log.warning('Falling back to the pure-Python edge-list loader because the '
+                        'Cython extension is unavailable. Install the package with '
+                        '`python setup.py build_ext --inplace` for faster training.')
+            data = _python_batched_dataset(idx, objects, weights, opt.negs,
+                opt.batchsize, opt.burnin > 0, opt.dampening)
     else:
         log.info('Using adjacency matrix dataloader')
+        if AdjacencyDataset is None:
+            raise ImportError(
+                'AdjacencyDataset extension is missing. Build the Cython modules with '
+                '`python setup.py build_ext --inplace` (or install the package) before '
+                'training on adjacency matrices.'
+            )
         dset = load_adjacency_matrix(opt.dset, 'hdf5')
         log.info('Setting up dataset...')
         data = AdjacencyDataset(dset, opt.negs, opt.batchsize, opt.ndproc,
