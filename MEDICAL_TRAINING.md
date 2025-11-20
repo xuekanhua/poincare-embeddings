@@ -51,6 +51,10 @@ If you hit a `CalledProcessError` while training:
   install the compiled extensions with `python setup.py build_ext --inplace`
   and retry. The helper now falls back to a pure-Python loader for CSV edge
   lists, but the compiled version is faster on large datasets.
+* If you see `ModuleNotFoundError: No module named "hype.adjacency_matrix_dataset"`
+  when training on an HDF5 adjacency matrix, the Cython module was not built.
+  Rebuild with `python setup.py build_ext --inplace` (or reinstall the package)
+  so `AdjacencyDataset` becomes available.
 
 The passthrough flag can forward any `embed.py` option (e.g., `-gpu -1` to
 force CPU or `-fresh` to discard old checkpoints).

@@ -10,7 +10,12 @@ import numpy as np
 import logging
 import argparse
 from typing import Iterable, Tuple
-from hype.adjacency_matrix_dataset import AdjacencyDataset
+
+try:  # Optional: requires Cython extension build
+    from hype.adjacency_matrix_dataset import AdjacencyDataset
+except Exception:  # pragma: no cover - runtime fallback
+    AdjacencyDataset = None
+
 from hype import train
 from hype.graph import load_adjacency_matrix, load_edge_list, eval_reconstruction
 from hype.checkpoint import LocalCheckpoint
@@ -223,6 +228,12 @@ def main():
                 opt.batchsize, opt.burnin > 0, opt.dampening)
     else:
         log.info('Using adjacency matrix dataloader')
+        if AdjacencyDataset is None:
+            raise ImportError(
+                'AdjacencyDataset extension is missing. Build the Cython modules with '
+                '`python setup.py build_ext --inplace` (or install the package) before '
+                'training on adjacency matrices.'
+            )
         dset = load_adjacency_matrix(opt.dset, 'hdf5')
         log.info('Setting up dataset...')
         data = AdjacencyDataset(dset, opt.negs, opt.batchsize, opt.ndproc,
