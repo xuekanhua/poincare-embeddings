@@ -206,36 +206,68 @@ def main():
             else:
                 adj[x] = {y}
 
-    controlQ, logQ = mp.Queue(), mp.Queue()
-    control_thread = mp.Process(target=async_eval, args=(adj, controlQ, logQ, opt))
-    control_thread.start()
+    best_eval = None
+    if opt.train_threads > 1:
+        controlQ, logQ = mp.Queue(), mp.Queue()
+        control_thread = mp.Process(target=async_eval, args=(adj, controlQ, logQ, opt))
+        control_thread.start()
 
-    # control closure
-    def control(model, epoch, elapsed, loss):
-        """
-        Control thread to evaluate embedding
-        """
-        lt = model.w_avg if hasattr(model, 'w_avg') else model.lt.weight.data
-        model.manifold.normalize(lt)
+        # control closure
+        def control(model, epoch, elapsed, loss):
+            """
+            Control thread to evaluate embedding
+            """
+            lt = model.w_avg if hasattr(model, 'w_avg') else model.lt.weight.data
+            model.manifold.normalize(lt)
 
-        checkpoint.path = f'{opt.checkpoint}.{epoch}'
-        checkpoint.save({
-            'model': model.state_dict(),
-            'embeddings': lt,
-            'epoch': epoch,
-            'model_type': opt.model,
-        })
+            checkpoint.path = f'{opt.checkpoint}.{epoch}'
+            checkpoint.save({
+                'model': model.state_dict(),
+                'embeddings': lt,
+                'epoch': epoch,
+                'model_type': opt.model,
+            })
 
-        controlQ.put((epoch, elapsed, loss, checkpoint.path))
+            controlQ.put((epoch, elapsed, loss, checkpoint.path))
 
-        while not logQ.empty():
-            lmsg, pth = logQ.get()
-            shutil.move(pth, opt.checkpoint)
+            while not logQ.empty():
+                lmsg, pth = logQ.get()
+                shutil.move(pth, opt.checkpoint)
+                if lmsg['best']:
+                    shutil.copy(opt.checkpoint, opt.checkpoint + '.best')
+                log.info(f'json_stats: {json.dumps(lmsg)}')
+
+        control.checkpoint = True
+    else:
+        def control(model, epoch, elapsed, loss):
+            nonlocal best_eval
+
+            lt = model.w_avg if hasattr(model, 'w_avg') else model.lt.weight.data
+            model.manifold.normalize(lt)
+
+            checkpoint.path = f'{opt.checkpoint}.{epoch}'
+            checkpoint.save({
+                'model': model.state_dict(),
+                'embeddings': lt,
+                'epoch': epoch,
+                'model_type': opt.model,
+            })
+
+            if opt.eval == 'reconstruction':
+                lmsg = reconstruction_eval(adj, opt, epoch, elapsed, loss, checkpoint.path, best_eval)
+            elif opt.eval == 'hypernymy':
+                lmsg = hypernymy_eval(epoch, elapsed, loss, checkpoint.path, best_eval)
+            else:  # pragma: no cover - defensive
+                raise ValueError(f'Unrecognized evaluation: {opt.eval}')
+
+            best_eval = lmsg if lmsg['best'] else best_eval
+            shutil.move(checkpoint.path, opt.checkpoint)
             if lmsg['best']:
                 shutil.copy(opt.checkpoint, opt.checkpoint + '.best')
             log.info(f'json_stats: {json.dumps(lmsg)}')
 
-    control.checkpoint = True
+        control.checkpoint = True
+
     model = model.to(device)
     if hasattr(model, 'w_avg'):
         model.w_avg = model.w_avg.to(device)
@@ -249,15 +281,15 @@ def main():
             threads.append(mp.Process(target=train.train, args=args, kwargs=kwargs))
             threads[-1].start()
         [t.join() for t in threads]
+        controlQ.put(None)
+        control_thread.join()
+        while not logQ.empty():
+            lmsg, pth = logQ.get()
+            shutil.move(pth, opt.checkpoint)
+            log.info(f'json_stats: {json.dumps(lmsg)}')
     else:
         train.train(device, model, data, optimizer, opt, log, ctrl=control,
             progress=not opt.quiet)
-    controlQ.put(None)
-    control_thread.join()
-    while not logQ.empty():
-        lmsg, pth = logQ.get()
-        shutil.move(pth, opt.checkpoint)
-        log.info(f'json_stats: {json.dumps(lmsg)}')
 
 
 if __name__ == '__main__':
